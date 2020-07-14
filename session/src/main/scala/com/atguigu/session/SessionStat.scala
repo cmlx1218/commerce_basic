@@ -34,10 +34,20 @@ object SessionStat {
     val sparkSession = SparkSession.builder().config(sparkConf).enableHiveSupport().getOrCreate()
 
     //获取原始的动作表数据
+    //actionRDD:RDD[UserVisitAction]
     val actionRDD = getOriActionRDD(sparkSession, taskParam)
-    actionRDD.foreach(println(_))
+//    actionRDD.foreach(println(_))
 
-    //
+    //sessionId2ActionRDD[(sessionId,UserVisitAction)]
+    val sessionId2ActionRDD = actionRDD.map(item => (item.session_id, item))
+
+    //session2GroupActionRDD:RDD[(sessionId,iterable_UserVisitAction)]
+    val session2GroupActionRDD = sessionId2ActionRDD.groupByKey()
+
+    session2GroupActionRDD.cache()
+
+    session2GroupActionRDD.foreach(println(_))
+
   }
 
   def getOriActionRDD(sparkSession: SparkSession, taskParam: JSONObject) = {
