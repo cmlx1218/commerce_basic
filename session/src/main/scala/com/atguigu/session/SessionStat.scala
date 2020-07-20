@@ -11,12 +11,15 @@ import org.apache.spark.SparkConf
 import org.apache.spark.rdd.RDD
 import org.apache.spark.sql.SparkSession
 
+import scala.collection.mutable
+
 /**
   * @Desc
   * @Author cmlx
   * @Date 2020-7-14 0014 15:34
   */
 object SessionStat {
+
 
   def main(args: Array[String]): Unit = {
     //获取筛选条件
@@ -55,14 +58,63 @@ object SessionStat {
 
     //    sessionId2FullInfoRDD.foreach(println(_))
 
-    // 过滤数据
-    val sessionId2FilterRDD = getSessionFilteredRDD(taskParam, sessionId2FullInfoRDD)
+
+    // 注册自定义累加器
+    val sessionAccumulator = new SessionAccumulator
+    sparkSession.sparkContext.register(sessionAccumulator)
+    // 过滤数据【实现根据限制条件对session数据进行过滤，并完成累加器的更新】
+    val sessionId2FilterRDD = getSessionFilteredRDD(taskParam, sessionId2FullInfoRDD, sessionAccumulator)
     sessionId2FilterRDD.foreach(println(_))
+    getSessionRatio(sparkSession, taskUUID, sessionAccumulator.value)
 
   }
 
+  def getSessionRatio(sparkSession: SparkSession, taskUUID: String, value: mutable.HashMap[String, Int]): Unit = {
+
+  }
+
+
+  def calculateVisitLength(visitLength: Long, sessionAccumulator: SessionAccumulator) = {
+    if (visitLength >= 1 && visitLength <= 3) {
+      sessionAccumulator.add(Constants.TIME_PERIOD_1m_3m)
+    } else if (visitLength >= 4 && visitLength <= 6) {
+      sessionAccumulator.add(Constants.TIME_PERIOD_4s_6s)
+    } else if (visitLength >= 7 && visitLength <= 9) {
+      sessionAccumulator.add(Constants.TIME_PERIOD_7s_9s)
+    } else if (visitLength >= 10 && visitLength <= 30) {
+      sessionAccumulator.add(Constants.TIME_PERIOD_10s_30s)
+    } else if (visitLength > 30 && visitLength <= 60) {
+      sessionAccumulator.add(Constants.TIME_PERIOD_30s_60s)
+    } else if (visitLength > 60 && visitLength <= 180) {
+      sessionAccumulator.add(Constants.TIME_PERIOD_1m_3m)
+    } else if (visitLength > 180 && visitLength <= 600) {
+      sessionAccumulator.add(Constants.TIME_PERIOD_3m_10m)
+    } else if (visitLength > 600 && visitLength <= 1800) {
+      sessionAccumulator.add(Constants.TIME_PERIOD_10m_30m)
+    } else if (visitLength > 1800) {
+      sessionAccumulator.add(Constants.TIME_PERIOD_30m)
+    }
+  }
+
+  def calculateStepLength(stepLength: Long, sessionAccumulator: SessionAccumulator) = {
+    if (stepLength >= 1 && stepLength <= 3) {
+      sessionAccumulator.add(Constants.STEP_PERIOD_1_3)
+    } else if (stepLength >= 4 && stepLength <= 6) {
+      sessionAccumulator.add(Constants.STEP_PERIOD_4_6)
+    } else if (stepLength >= 7 && stepLength <= 9) {
+      sessionAccumulator.add(Constants.STEP_PERIOD_7_9)
+    } else if (stepLength >= 10 && stepLength <= 30) {
+      sessionAccumulator.add(Constants.STEP_PERIOD_10_30)
+    } else if (stepLength > 30 && stepLength <= 60) {
+      sessionAccumulator.add(Constants.STEP_PERIOD_30_60)
+    } else if (stepLength > 60) {
+      sessionAccumulator.add(Constants.STEP_PERIOD_60)
+    }
+  }
+
   def getSessionFilteredRDD(taskParam: JSONObject,
-                            sessionId2FullInfoRDD: RDD[(String, String)]) = {
+                            sessionId2FullInfoRDD: RDD[(String, String)],
+                            sessionAccumulator: SessionAccumulator) = {
     val startAge = ParamUtils.getParam(taskParam, Constants.PARAM_START_AGE)
     val endAge = ParamUtils.getParam(taskParam, Constants.PARAM_END_AGE)
     val professionals = ParamUtils.getParam(taskParam, Constants.PARAM_PROFESSIONALS)
@@ -101,6 +153,14 @@ object SessionStat {
 
         if (success) {
           //acc.add()
+          // session数量加1
+          sessionAccumulator.add(Constants.SESSION_COUNT)
+          // session属于哪个时长范围，给对应范围加1
+          val visitLength = StringUtils.getFieldFromConcatString(fullInfo, "\\|", Constants.FIELD_VISIT_LENGTH).toLong
+          // session属于哪个步长范围，给对应范围加1
+          val stepLength = StringUtils.getFieldFromConcatString(fullInfo, "\\|", Constants.FIELD_STEP_LENGTH).toLong
+          calculateVisitLength(visitLength, sessionAccumulator)
+          calculateStepLength(stepLength, sessionAccumulator)
         }
         success
       }
