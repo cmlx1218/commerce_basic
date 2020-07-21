@@ -12,6 +12,8 @@ import org.apache.spark.rdd.RDD
 import org.apache.spark.sql.{SaveMode, SparkSession}
 
 import scala.collection.mutable
+import scala.collection.mutable.ListBuffer
+import scala.util.Random
 
 /**
   * @Desc
@@ -19,7 +21,6 @@ import scala.collection.mutable
   * @Date 2020-7-14 0014 15:34
   */
 object SessionStat {
-
 
   def main(args: Array[String]): Unit = {
     //获取筛选条件
@@ -68,7 +69,104 @@ object SessionStat {
     // 从累加器中读取各个访问步长和访问时长的session的个数，计算比率，并将最终的结果写入数据库
     getSessionRatio(sparkSession, taskUUID, sessionAccumulator.value)
 
+    /**
+      * 需求二：session随机抽取
+      * sessionId2FilterRDD: RDD[(sid, fullInfo)]
+      * 一个session对应一条数据，也就是一个fullInfo
+      */
+    sessionRandomExtract(sparkSession, taskUUID, sessionId2FilterRDD)
+
   }
+
+  def generateRandomIndexList(extractPerDay: Long,
+                              daySessionCount: Long,
+                              hourCountMap: mutable.HashMap[String, Long],
+                              hourListMap: mutable.HashMap[String, ListBuffer[Int]]): Unit = {
+    for ((hour, count) <- hourCountMap) {
+      // 获取一个小时要抽取多少条数据
+      var hourExrCount = ((count / daySessionCount.toDouble) * extractPerDay).toInt
+      // 避免一个小时要抽取的数量超过这个歌小时的总数
+      if (hourExrCount > count)
+        hourExrCount = count.toInt
+
+      val random = new Random()
+
+      hourListMap.get(hour) match {
+        case None => hourListMap(hour) = new ListBuffer[Int]
+          for (i <- 0 until hourExrCount) {
+            var index = random.nextInt(count.toInt)
+            while (hourListMap(hour).contains(index)) {
+              index = random.nextInt(count.toInt)
+            }
+            hourListMap(hour).append(index)
+          }
+        case Some(list) =>
+          for (i <- 0 until hourExrCount) {
+            var index = random.nextInt(count.toInt)
+            while (hourListMap(hour).contains(index)) {
+              index = random.nextInt(count.toInt)
+            }
+            hourListMap(hour).append(index)
+          }
+      }
+    }
+  }
+
+
+  def sessionRandomExtract(sparkSession: SparkSession, taskUUID: String, sessionId2FilterRDD: RDD[(String, String)]): Unit = {
+
+    // dateHour2FullInfoRDD: RDD[(dateHour, fullInfo)]
+    val dateHour2FullInfoRDD = sessionId2FilterRDD.map {
+      case (sid, fullInfo) =>
+        val startTime = StringUtils.getFieldFromConcatString(fullInfo, "\\|", Constants.FIELD_START_TIME)
+        // dateHour: yyyy-MM-dd_HH
+        val dateHour = DateUtils.getDateHour(startTime)
+        (dateHour, fullInfo)
+    }
+    // hourCountMap: Map[(dateHour, count)]
+    val hourCountMap = dateHour2FullInfoRDD.countByKey()
+    // dateHourCountMap: Map[date,Map[hour,count]]
+    val dateHourCountMap = new mutable.HashMap[String, mutable.HashMap[String, Long]]()
+
+    for ((dateHour, count) <- hourCountMap) {
+      val date = dateHour.split("_")(0)
+      val hour = dateHour.split("_")(1)
+
+      dateHourCountMap.get(date) match {
+        case None => dateHourCountMap(date) = new mutable.HashMap[String, Long]()
+          dateHourCountMap(date) += (hour -> count)
+        case Some(map) => dateHourCountMap(date) += (hour -> count)
+      }
+    }
+
+    // 解决问题一：一共有多少天：dateHourCountMap.size
+    //          一天抽取多少条：100 / dateHourCountMap.size
+    val extractPerDay = 100 / dateHourCountMap.size
+    //解决问题二：一天有多少个session：dateHourCountMap(date).values.sum
+    //解决问题三：一个小时有多少session：dateHourCountMap(date)(hour)
+    val dateHourExtractIndexListMap = new mutable.HashMap[String, mutable.HashMap[String, ListBuffer[Int]]]()
+
+    for ((date, hourCountMap) <- dateHourCountMap) {
+      val dateSessionCount = hourCountMap.values.sum
+
+      dateHourExtractIndexListMap.get(date) match {
+        case None => dateHourExtractIndexListMap(date) = new mutable.HashMap[String, ListBuffer[Int]]()
+          generateRandomIndexList(extractPerDay, dateSessionCount, hourCountMap, dateHourExtractIndexListMap(date))
+        case Some(map) => {
+          generateRandomIndexList(extractPerDay, dateSessionCount, hourCountMap, dateHourExtractIndexListMap(date))
+        }
+
+          // 到目前为止，我们获得了每个小时要抽取的session的index
+          // 广播大变量，提升人物性能
+          val dateHourExtractIndexListMapBd = sparkSession.sparkContext.broadcast(dateHourExtractIndexListMap)
+
+          //
+
+      }
+    }
+
+  }
+
 
   def getSessionRatio(sparkSession: SparkSession, taskUUID: String, value: mutable.HashMap[String, Int]): Unit = {
 
