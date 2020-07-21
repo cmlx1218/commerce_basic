@@ -5,11 +5,11 @@ import java.util.{Date, UUID}
 import commons.conf.ConfigurationManager
 import commons.constant.Constants
 import commons.model.{UserInfo, UserVisitAction}
-import commons.utils.{DateUtils, ParamUtils, StringUtils, ValidUtils}
+import commons.utils.{DateUtils, NumberUtils, ParamUtils, StringUtils, ValidUtils}
 import net.sf.json.JSONObject
 import org.apache.spark.SparkConf
 import org.apache.spark.rdd.RDD
-import org.apache.spark.sql.SparkSession
+import org.apache.spark.sql.{SaveMode, SparkSession}
 
 import scala.collection.mutable
 
@@ -65,11 +65,69 @@ object SessionStat {
     // 过滤数据【实现根据限制条件对session数据进行过滤，并完成累加器的更新】
     val sessionId2FilterRDD = getSessionFilteredRDD(taskParam, sessionId2FullInfoRDD, sessionAccumulator)
     sessionId2FilterRDD.foreach(println(_))
+    // 从累加器中读取各个访问步长和访问时长的session的个数，计算比率，并将最终的结果写入数据库
     getSessionRatio(sparkSession, taskUUID, sessionAccumulator.value)
 
   }
 
   def getSessionRatio(sparkSession: SparkSession, taskUUID: String, value: mutable.HashMap[String, Int]): Unit = {
+
+    val session_count = value.getOrElse(Constants.SESSION_COUNT, 1).toDouble
+    val visitLength_1s_3s = value.getOrElse(Constants.TIME_PERIOD_1s_3s, 0)
+    val visitLength_4s_6s = value.getOrElse(Constants.TIME_PERIOD_4s_6s, 0)
+    val visitLength_7s_9s = value.getOrElse(Constants.TIME_PERIOD_7s_9s, 0)
+    val visitLength_10s_30s = value.getOrElse(Constants.TIME_PERIOD_10s_30s, 0)
+    val visitLength_30s_60s = value.getOrElse(Constants.TIME_PERIOD_30s_60s, 0)
+    val visitLength_1m_3m = value.getOrElse(Constants.TIME_PERIOD_1m_3m, 0)
+    val visitLength_3m_10m = value.getOrElse(Constants.TIME_PERIOD_3m_10m, 0)
+    val visitLength_10m_30m = value.getOrElse(Constants.TIME_PERIOD_10m_30m, 0)
+    val visitLength_30m = value.getOrElse(Constants.TIME_PERIOD_30m, 0)
+
+    val stepLength_1_3 = value.getOrElse(Constants.STEP_PERIOD_1_3, 0)
+    val stepLength_4_6 = value.getOrElse(Constants.STEP_PERIOD_4_6, 0)
+    val stepLength_7_9 = value.getOrElse(Constants.STEP_PERIOD_7_9, 0)
+    val stepLength_10_30 = value.getOrElse(Constants.STEP_PERIOD_10_30, 0)
+    val stepLength_30_60 = value.getOrElse(Constants.STEP_PERIOD_30_60, 0)
+    val stepLength_60 = value.getOrElse(Constants.STEP_PERIOD_60, 0)
+
+    val visit_length_1s_3s_ratio = NumberUtils.formatDouble(visitLength_1s_3s / session_count, 2)
+    val visit_length_4s_6s_ratio = NumberUtils.formatDouble(visitLength_4s_6s / session_count, 2)
+    val visit_length_7s_9s_ratio = NumberUtils.formatDouble(visitLength_7s_9s / session_count, 2)
+    val visit_length_10s_30s_ratio = NumberUtils.formatDouble(visitLength_10s_30s / session_count, 2)
+    val visit_length_30s_60s_ratio = NumberUtils.formatDouble(visitLength_30s_60s / session_count, 2)
+    val visit_length_1m_3m_ratio = NumberUtils.formatDouble(visitLength_1m_3m / session_count, 2)
+    val visit_length_3m_10m_ratio = NumberUtils.formatDouble(visitLength_3m_10m / session_count, 2)
+    val visit_length_10m_30m_ratio = NumberUtils.formatDouble(visitLength_10m_30m / session_count, 2)
+    val visit_length_30m_ratio = NumberUtils.formatDouble(visitLength_30m / session_count, 2)
+
+    val step_length_1_3_ratio = NumberUtils.formatDouble(stepLength_1_3 / session_count, 2)
+    val step_length_4_6_ratio = NumberUtils.formatDouble(stepLength_4_6 / session_count, 2)
+    val step_length_7_9_ratio = NumberUtils.formatDouble(stepLength_7_9 / session_count, 2)
+    val step_length_10_30_ratio = NumberUtils.formatDouble(stepLength_10_30 / session_count, 2)
+    val step_length_30_60_ratio = NumberUtils.formatDouble(stepLength_30_60 / session_count, 2)
+    val step_length_60_ratio = NumberUtils.formatDouble(stepLength_60 / session_count, 2)
+
+    // 将统计结果封装为Domain对象
+    val sessionAggrStat = SessionAggrStat(taskUUID,
+      session_count.toInt, visit_length_1s_3s_ratio, visit_length_4s_6s_ratio, visit_length_7s_9s_ratio,
+      visit_length_10s_30s_ratio, visit_length_30s_60s_ratio, visit_length_1m_3m_ratio,
+      visit_length_3m_10m_ratio, visit_length_10m_30m_ratio, visit_length_30m_ratio,
+      step_length_1_3_ratio, step_length_4_6_ratio, step_length_7_9_ratio,
+      step_length_10_30_ratio, step_length_30_60_ratio, step_length_60_ratio)
+
+    //将数据写入mysql数据库
+    val sessionRatioRDD = sparkSession.sparkContext.makeRDD(Array(sessionAggrStat))
+
+    import sparkSession.implicits._
+
+    sessionRatioRDD.toDF().write
+      .format("jdbc")
+      .option("url", ConfigurationManager.config.getString(Constants.JDBC_URL))
+      .option("user", ConfigurationManager.config.getString(Constants.JDBC_USER))
+      .option("password", ConfigurationManager.config.getString(Constants.JDBC_PASSWORD))
+      .option("dbtable", "session_stat_ratio_1218")
+      .mode(SaveMode.Append)
+      .save()
 
   }
 
