@@ -12,7 +12,7 @@ import org.apache.spark.rdd.RDD
 import org.apache.spark.sql.{SaveMode, SparkSession}
 
 import scala.collection.mutable
-import scala.collection.mutable.ListBuffer
+import scala.collection.mutable.{ArrayBuffer, ListBuffer}
 import scala.util.Random
 
 /**
@@ -157,11 +157,47 @@ object SessionStat {
         }
 
           // 到目前为止，我们获得了每个小时要抽取的session的index
-          // 广播大变量，提升人物性能
+          // 广播大变量，提升任务性能
           val dateHourExtractIndexListMapBd = sparkSession.sparkContext.broadcast(dateHourExtractIndexListMap)
 
-          //
+          // dateHour2FullInfoRDD: RDD[(dateHour,fullInfo)]
+          // dateHour2GroupRDD: RDD[(dateHour, iterableFullInfo)]
+          val dateHour2GroupRDD = dateHour2FullInfoRDD.groupByKey()
 
+          // extractSessionRDD: RDD[SessionRandomExtract]
+          val extractSessionRDD = dateHour2GroupRDD.flatMap {
+            case (dateHour, iterableFullInfo) =>
+              val date = dateHour.split("_")(0)
+              val hour = dateHour.split("_")(1)
+
+              val extractList = dateHourExtractIndexListMapBd.value.get(date).get(hour)
+
+              val extractSessionArrayBuffer = new ArrayBuffer[SessionRandomExtract]()
+
+              var index = 0
+
+              for (fullInfo <- iterableFullInfo) {
+                if (extractList.contains(index)) {
+                  val sessionId = StringUtils.getFieldFromConcatString(fullInfo, "//|", Constants.FIELD_SESSION_ID)
+                  val startTime = StringUtils.getFieldFromConcatString(fullInfo, "//|", Constants.FIELD_START_TIME)
+                  val searchKeywords = StringUtils.getFieldFromConcatString(fullInfo, "//|", Constants.FIELD_SEARCH_KEYWORDS)
+                  val clickCategories = StringUtils.getFieldFromConcatString(fullInfo, "//|", Constants.FIELD_CLICK_CATEGORY_IDS)
+
+                  val extractSession = SessionRandomExtract(taskUUID, sessionId, startTime, searchKeywords, clickCategories)
+                  extractSessionArrayBuffer += extractSession
+                }
+                index += 1
+              }
+              extractSessionArrayBuffer
+          }
+          import sparkSession.implicits._
+          extractSessionRDD.toDF().write
+            .format("jdbc")
+            .option("url", ConfigurationManager.config.getString(Constants.JDBC_URL))
+            .option("user", ConfigurationManager.config.getString(Constants.JDBC_USER))
+            .option("password", ConfigurationManager.config.getString(Constants.JDBC_PASSWORD))
+            .option("dbtable", "session_extract")
+            .save()
       }
     }
 
