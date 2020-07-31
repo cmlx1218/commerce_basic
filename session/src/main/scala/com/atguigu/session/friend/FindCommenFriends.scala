@@ -3,9 +3,6 @@ package com.atguigu.session.friend
 import org.apache.spark.rdd.RDD
 import org.apache.spark.{SparkConf, SparkContext}
 
-import scala.collection.mutable
-import scala.collection.parallel.immutable
-
 /**
   * @Desc spark共同好友查询
   * @Author cmlx
@@ -47,7 +44,7 @@ object FindCommenFriends {
     println("-----------------------------------------")
 
     //3、共同好友计算
-    val commenFriends: RDD[((String, String), Iterable[String])] = pairs
+    val commonFriends: RDD[((String, String), Iterable[String])] = pairs
       .groupByKey()
       .mapValues(item => {
         val friendCount = for {
@@ -57,18 +54,30 @@ object FindCommenFriends {
         } yield ((friend, 1))
 
 
+        //获取共同好友
+        //        friendCount.groupBy(_._1).mapValues(_.unzip._2.sum).filter(_._2 > 1).map(_._1)
+        //获取推荐好友【包含参考双方】
         friendCount.groupBy(_._1).mapValues(_.unzip._2.sum).filter(_._2 <= 1).map(_._1)
       })
 
-    commenFriends.flatMap {
-      case ((String,String),Iterable[String]) =>{
+    println("获取推荐好友【包含参考双方】：=======================》")
+    commonFriends.foreach(println(_))
+
+    val recommendFriends: RDD[((String, String), Iterable[String])] = commonFriends.map {
+      case ((person, friend), commendFriend) => {
+        val disCommendFriend = commendFriend.filterNot(c => c.contains(person) || c.contains(friend))
+
+        ((person, friend), disCommendFriend)
 
       }
     }
-    commenFriends.foreach(println(_))
+
+    println("获取推荐好友【不包含参考双方】：=======================》")
+    recommendFriends.foreach(println(_))
+
 
     //打印共同好友结果
-    val formatedResult = commenFriends.map(
+    val formatedResult = commonFriends.map(
       f => s"(${f._1._1}, ${f._1._2})\t${f._2.mkString("[", ", ", "]")}"
     )
 
